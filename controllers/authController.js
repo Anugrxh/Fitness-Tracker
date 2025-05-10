@@ -1,4 +1,5 @@
 // controllers/authController.js
+const nodemailer = require('nodemailer');
 const User = require('../models/User.js');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
@@ -37,7 +38,7 @@ exports.login = async (req, res) => {
       const token = jwt.sign(
         { userId: user._id },
         process.env.JWT_SECRET,
-        { expiresIn: '1h' }
+        { expiresIn: '1d' }
       );
   
       res.json({
@@ -107,3 +108,105 @@ exports.logout = async (req, res) => {
   };
   
   
+
+// FORGOT PASSWORD CONTROLLER
+exports.forgotPassword = async (req, res) => {
+  try {
+    const { email } = req.body;
+
+    if (!email) {
+      return res.status(400).json({ error: 'Email is required' });
+    }
+
+    // Find user
+    const user = await User.findOne({ email });
+    if (!user) {
+      console.log(`Password reset requested for non-existent email: ${email}`);
+      // Return success even if user doesn't exist (security best practice)
+      return res.status(200).json({ message: 'If an account exists, a password reset link has been sent.' });
+    }
+
+    // Create reset token with 1-day expiry
+    const resetToken = jwt.sign(
+      { userId: user._id },
+      process.env.JWT_SECRET,
+      { expiresIn: '1d' }
+    );
+
+    // Construct reset link
+    const resetLink = `${req.protocol}://${req.get('host')}/reset-password/${resetToken}`;
+
+    // Verify environment variables
+    if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS) {
+      console.error('Missing email configuration in environment variables');
+      return res.status(500).json({ error: 'Email service not configured' });
+    }
+
+    // Send email with reset link using nodemailer
+    const transporter = nodemailer.createTransport({
+      service: 'gmail',
+      auth: {
+        user: process.env.EMAIL_USER,
+        pass: process.env.EMAIL_PASS
+      },
+      tls: {
+        rejectUnauthorized: false
+      }
+    });
+
+    const mailOptions = {
+      from: process.env.EMAIL_USER,
+      to: email,
+      subject: 'Password Reset Link',
+      html: `<p>You requested a password reset.</p>
+             <p>Click <a href="${resetLink}">here</a> to reset your password. This link is valid for 1 day.</p>
+             <p>If you didn't request this, please ignore this email.</p>`
+    };
+
+    try {
+      await transporter.sendMail(mailOptions);
+      console.log(`Password reset email sent to: ${email}`);
+    } catch (emailError) {
+      console.error('Error sending email:', emailError);
+      return res.status(500).json({ error: 'Failed to send reset email' });
+    }
+
+    // Store the resetToken in the user document
+    user.resetToken = resetToken;
+    user.resetTokenExpiry = Date.now() + 24 * 60 * 60 * 1000; // 1 day
+    await user.save();
+
+    res.status(200).json({ message: 'If an account exists, a password reset link has been sent.' });
+  } catch (err) {
+    console.error('Forgot password error:', err);
+    res.status(500).json({ error: 'Server error' });
+  }
+};
+
+// RESET PASSWORD CONTROLLER
+exports.resetPassword = async (req, res) => {
+  try {
+    const { token } = req.params;
+    const { newPassword } = req.body;
+
+    // Verify token -  Now, verify against the token stored in the user document
+    const user = await User.findOne({ 
+        resetToken: token,
+        resetTokenExpiry: { $gt: Date.now() } // Check expiry
+    });
+    
+    if (!user) return res.status(400).json({ error: 'Invalid or expired token' });
+
+
+    // Update password
+    user.password = newPassword; // Let pre-save hook hash it
+    user.resetToken = undefined; // Clear the token
+    user.resetTokenExpiry = undefined; // Clear the expiry
+    await user.save();
+
+    res.status(200).json({ message: 'Password has been reset successfully' });
+  } catch (err) {
+    console.error('Reset password error:', err);
+    res.status(400).json({ error: 'Invalid or expired token' });
+  }
+};

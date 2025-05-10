@@ -23,6 +23,9 @@ app.use('/api/track', trackRoutes);
 const workoutRoutes = require('./routes/workoutRoute');
 app.use('/api/workouts', workoutRoutes);
 
+// ✅ Use Progress routes
+const progressRoutes = require('./routes/progressRoute');
+app.use('/api/progress', progressRoutes);
 
 
 
